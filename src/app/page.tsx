@@ -1,68 +1,971 @@
+"use client";
+
 import Image from "next/image";
+import { useEffect, useState } from "react";
+import {
+  BarChart3,
+  CalendarRange,
+  Flame,
+  Medal,
+  NotebookPen,
+  Target,
+  Trophy,
+  Users,
+} from "lucide-react";
+
+type Player = {
+  id: string;
+  name: string;
+  jerseyNumber: string;
+  graduationYear: string;
+};
+
+type WorkoutEntry = {
+  id: string;
+  playerId: string;
+  season: string;
+  workoutType: string;
+  workoutDate: string;
+  score: number;
+  makes: number;
+  attempts: number;
+  notes: string;
+  createdAt: string;
+};
+
+type AppState = {
+  players: Player[];
+  entries: WorkoutEntry[];
+  seasons: string[];
+  selectedSeason: string;
+  selectedPlayerId: string | null;
+};
+
+type Summary = {
+  workouts: number;
+  totalScore: number;
+  averageScore: number;
+  makes: number;
+  attempts: number;
+  percentage: number;
+};
+
+const STORAGE_KEY = "shooting-ladder:v1";
+
+function createId() {
+  return `${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+}
+
+function getCurrentSeason() {
+  const now = new Date();
+  const year = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const nextYear = (year + 1).toString().slice(-2);
+  return `${year}-${nextYear}`;
+}
+
+function getDefaultState(): AppState {
+  const season = getCurrentSeason();
+
+  return {
+    players: [],
+    entries: [],
+    seasons: [season],
+    selectedSeason: season,
+    selectedPlayerId: null,
+  };
+}
+
+function summarizeEntries(entries: WorkoutEntry[]): Summary {
+  const totals = entries.reduce(
+    (accumulator, entry) => {
+      accumulator.workouts += 1;
+      accumulator.totalScore += entry.score;
+      accumulator.makes += entry.makes;
+      accumulator.attempts += entry.attempts;
+      return accumulator;
+    },
+    { workouts: 0, totalScore: 0, makes: 0, attempts: 0 },
+  );
+
+  return {
+    workouts: totals.workouts,
+    totalScore: totals.totalScore,
+    averageScore: totals.workouts ? totals.totalScore / totals.workouts : 0,
+    makes: totals.makes,
+    attempts: totals.attempts,
+    percentage: totals.attempts ? (totals.makes / totals.attempts) * 100 : 0,
+  };
+}
+
+function formatPercent(value: number) {
+  return `${value.toFixed(1)}%`;
+}
+
+function formatAverage(value: number) {
+  return value.toFixed(1);
+}
+
+function StatCard({
+  label,
+  value,
+  detail,
+  icon,
+  accent,
+}: {
+  label: string;
+  value: string | number;
+  detail: string;
+  icon: React.ReactNode;
+  accent: string;
+}) {
+  return (
+    <div className="rounded-[1.6rem] border border-white/10 bg-slate-900/85 p-4 text-white shadow-[0_18px_45px_rgba(2,6,23,0.35)]">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-400">
+            {label}
+          </div>
+          <div className="mt-2 text-3xl font-black tracking-tight">{value}</div>
+        </div>
+        <div className={`rounded-2xl border px-3 py-3 ${accent}`}>{icon}</div>
+      </div>
+      <div className="mt-3 text-sm text-slate-400">{detail}</div>
+    </div>
+  );
+}
+
+function SectionHeading({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-2.5 text-amber-300">
+        {icon}
+      </div>
+      <div>
+        <h2 className="text-xl font-bold text-white">{title}</h2>
+        <p className="text-sm text-slate-400">{subtitle}</p>
+      </div>
+    </div>
+  );
+}
+
+function BrandLockup({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={`overflow-hidden rounded-[1.75rem] border border-white/10 bg-white/${compact ? "5" : "95"} ${
+        compact ? "p-3" : "p-4 sm:p-5"
+      } shadow-[0_16px_40px_rgba(2,6,23,0.22)]`}
+    >
+      <Image
+        src={compact ? "/TTB White.png" : "/Top Tier Basketball.png"}
+        alt={compact ? "Top Tier Basketball mark" : "Top Tier Basketball logo"}
+        width={compact ? 435 : 2048}
+        height={compact ? 301 : 755}
+        className={`h-auto w-full ${compact ? "max-w-[180px]" : "max-w-[520px]"}`}
+        priority
+      />
+    </div>
+  );
+}
 
 export default function Home() {
+  const [state, setState] = useState<AppState>(getDefaultState);
+  const [hydrated, setHydrated] = useState(false);
+  const [playerForm, setPlayerForm] = useState({
+    name: "",
+    jerseyNumber: "",
+    graduationYear: "",
+  });
+  const [seasonForm, setSeasonForm] = useState(getCurrentSeason());
+  const [entryForm, setEntryForm] = useState({
+    workoutType: "Daily shooting",
+    workoutDate: new Date().toISOString().slice(0, 10),
+    score: "",
+    makes: "",
+    attempts: "",
+    notes: "",
+  });
+
+  useEffect(() => {
+    try {
+      const storedState = window.localStorage.getItem(STORAGE_KEY);
+
+      if (storedState) {
+        const parsedState = JSON.parse(storedState) as Partial<AppState>;
+        const defaultState = getDefaultState();
+        const seasons = Array.from(
+          new Set([...(parsedState.seasons ?? []), defaultState.selectedSeason]),
+        );
+        const players = parsedState.players ?? [];
+        const selectedPlayerId = players.some(
+          (player) => player.id === parsedState.selectedPlayerId,
+        )
+          ? parsedState.selectedPlayerId ?? null
+          : players[0]?.id ?? null;
+
+        setState({
+          players,
+          entries: parsedState.entries ?? [],
+          seasons,
+          selectedSeason: seasons.includes(parsedState.selectedSeason ?? "")
+            ? (parsedState.selectedSeason as string)
+            : defaultState.selectedSeason,
+          selectedPlayerId,
+        });
+      }
+    } catch {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } finally {
+      setHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }, [hydrated, state]);
+
+  const selectedPlayer =
+    state.players.find((player) => player.id === state.selectedPlayerId) ?? null;
+  const seasonEntries = state.entries.filter(
+    (entry) => entry.season === state.selectedSeason,
+  );
+  const teamSeasonSummary = summarizeEntries(seasonEntries);
+  const teamCareerSummary = summarizeEntries(state.entries);
+  const recentEntries = [...state.entries]
+    .sort((left, right) => right.workoutDate.localeCompare(left.workoutDate))
+    .slice(0, 8);
+
+  const leaderboard = state.players
+    .map((player) => {
+      const careerEntries = state.entries.filter(
+        (entry) => entry.playerId === player.id,
+      );
+      const selectedSeasonEntries = careerEntries.filter(
+        (entry) => entry.season === state.selectedSeason,
+      );
+
+      return {
+        player,
+        season: summarizeEntries(selectedSeasonEntries),
+        career: summarizeEntries(careerEntries),
+      };
+    })
+    .sort((left, right) => {
+      if (right.season.averageScore !== left.season.averageScore) {
+        return right.season.averageScore - left.season.averageScore;
+      }
+
+      return right.season.totalScore - left.season.totalScore;
+    });
+
+  const selectedPlayerSeasonSummary = selectedPlayer
+    ? summarizeEntries(
+        state.entries.filter(
+          (entry) =>
+            entry.playerId === selectedPlayer.id &&
+            entry.season === state.selectedSeason,
+        ),
+      )
+    : summarizeEntries([]);
+  const selectedPlayerCareerSummary = selectedPlayer
+    ? summarizeEntries(
+        state.entries.filter((entry) => entry.playerId === selectedPlayer.id),
+      )
+    : summarizeEntries([]);
+
+  function handleAddPlayer(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = playerForm.name.trim();
+    if (!name) {
+      return;
+    }
+
+    const nextPlayer: Player = {
+      id: createId(),
+      name,
+      jerseyNumber: playerForm.jerseyNumber.trim(),
+      graduationYear: playerForm.graduationYear.trim(),
+    };
+
+    setState((currentState) => ({
+      ...currentState,
+      players: [...currentState.players, nextPlayer],
+      selectedPlayerId: currentState.selectedPlayerId ?? nextPlayer.id,
+    }));
+    setPlayerForm({ name: "", jerseyNumber: "", graduationYear: "" });
+  }
+
+  function handleRemovePlayer(playerId: string) {
+    setState((currentState) => {
+      const remainingPlayers = currentState.players.filter(
+        (player) => player.id !== playerId,
+      );
+
+      return {
+        ...currentState,
+        players: remainingPlayers,
+        entries: currentState.entries.filter((entry) => entry.playerId !== playerId),
+        selectedPlayerId:
+          currentState.selectedPlayerId === playerId
+            ? remainingPlayers[0]?.id ?? null
+            : currentState.selectedPlayerId,
+      };
+    });
+  }
+
+  function handleAddSeason(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const season = seasonForm.trim();
+    if (!season) {
+      return;
+    }
+
+    setState((currentState) => {
+      if (currentState.seasons.includes(season)) {
+        return { ...currentState, selectedSeason: season };
+      }
+
+      return {
+        ...currentState,
+        seasons: [...currentState.seasons, season].sort(),
+        selectedSeason: season,
+      };
+    });
+  }
+
+  function handleLogWorkout(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedPlayer) {
+      return;
+    }
+
+    const score = Number(entryForm.score);
+    const makes = Number(entryForm.makes);
+    const attempts = Number(entryForm.attempts);
+
+    if (
+      Number.isNaN(score) ||
+      Number.isNaN(makes) ||
+      Number.isNaN(attempts) ||
+      attempts < makes ||
+      attempts <= 0
+    ) {
+      return;
+    }
+
+    const nextEntry: WorkoutEntry = {
+      id: createId(),
+      playerId: selectedPlayer.id,
+      season: state.selectedSeason,
+      workoutType: entryForm.workoutType.trim() || "Daily shooting",
+      workoutDate: entryForm.workoutDate,
+      score,
+      makes,
+      attempts,
+      notes: entryForm.notes.trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    setState((currentState) => ({
+      ...currentState,
+      entries: [...currentState.entries, nextEntry],
+    }));
+    setEntryForm((currentForm) => ({
+      ...currentForm,
+      score: "",
+      makes: "",
+      attempts: "",
+      notes: "",
+    }));
+  }
+
+  function clearAllData() {
+    const resetState = getDefaultState();
+    setState(resetState);
+    setSeasonForm(resetState.selectedSeason);
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e293b_0,#0f172a_42%,#020617_100%)] pb-24 text-white">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+        <section className="overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/92 p-6 shadow-[0_24px_90px_rgba(2,6,23,0.42)] backdrop-blur">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-2xl space-y-3">
+              <BrandLockup />
+              <div className="flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-amber-300">
+                  <Target className="h-3.5 w-3.5" /> Top Tier Basketball
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-slate-300">
+                  <BarChart3 className="h-3.5 w-3.5" /> TopTierStats-inspired dashboard
+                </span>
+              </div>
+              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-300">
+                Year-round shooting development
+              </p>
+              <h1 className="text-4xl font-black tracking-tight text-white sm:text-5xl">
+                Top Tier Basketball keeps every shooting workout, season climb, and career standard in one place.
+              </h1>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <StatCard
+                label="Roster"
+                value={state.players.length}
+                detail="Players currently loaded"
+                icon={<Users className="h-5 w-5" />}
+                accent="border-sky-400/20 bg-sky-400/10 text-sky-300"
+              />
+              <StatCard
+                label="Season"
+                value={state.selectedSeason}
+                detail="Current leaderboard scope"
+                icon={<CalendarRange className="h-5 w-5" />}
+                accent="border-amber-400/20 bg-amber-400/10 text-amber-300"
+              />
+              <StatCard
+                label="Entries"
+                value={state.entries.length}
+                detail="Logged workouts in browser"
+                icon={<NotebookPen className="h-5 w-5" />}
+                accent="border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+              />
+              <StatCard
+                label="Career Avg"
+                value={formatAverage(teamCareerSummary.averageScore)}
+                detail="Average score across all seasons"
+                icon={<Flame className="h-5 w-5" />}
+                accent="border-rose-400/20 bg-rose-400/10 text-rose-300"
+              />
+            </div>
+          </div>
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <div className="space-y-6">
+            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+              <div className="flex items-center justify-between gap-4">
+                <SectionHeading
+                  icon={<Users className="h-5 w-5" />}
+                  title="Roster"
+                  subtitle="Manage the roster here and choose the active player for workout logging."
+                />
+                <button
+                  type="button"
+                  onClick={clearAllData}
+                  className="rounded-full border border-white/12 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-amber-400/40 hover:text-white"
+                >
+                  Reset app
+                </button>
+              </div>
+
+              <div className="mt-5">
+                <label className="mb-2 block text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+                  Active player
+                </label>
+                <select
+                  value={state.selectedPlayerId ?? ""}
+                  onChange={(event) =>
+                    setState((currentState) => ({
+                      ...currentState,
+                      selectedPlayerId: event.target.value || null,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+                >
+                  <option value="" disabled className="bg-slate-950 text-slate-300">
+                    Select player
+                  </option>
+                  {state.players.map((player) => (
+                    <option
+                      key={player.id}
+                      value={player.id}
+                      className="bg-slate-950 text-white"
+                    >
+                      {player.name}
+                      {player.jerseyNumber ? ` #${player.jerseyNumber}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <form onSubmit={handleAddPlayer} className="mt-5 grid gap-3 sm:grid-cols-4">
+                <input
+                  value={playerForm.name}
+                  onChange={(event) =>
+                    setPlayerForm((currentForm) => ({
+                      ...currentForm,
+                      name: event.target.value,
+                    }))
+                  }
+                  placeholder="Player name"
+                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-0 transition placeholder:text-slate-500 focus:border-amber-400"
+                />
+                <input
+                  value={playerForm.jerseyNumber}
+                  onChange={(event) =>
+                    setPlayerForm((currentForm) => ({
+                      ...currentForm,
+                      jerseyNumber: event.target.value,
+                    }))
+                  }
+                  placeholder="Jersey"
+                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-0 transition placeholder:text-slate-500 focus:border-amber-400"
+                />
+                <input
+                  value={playerForm.graduationYear}
+                  onChange={(event) =>
+                    setPlayerForm((currentForm) => ({
+                      ...currentForm,
+                      graduationYear: event.target.value,
+                    }))
+                  }
+                  placeholder="Grad year"
+                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-0 transition placeholder:text-slate-500 focus:border-amber-400"
+                />
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-amber-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-400"
+                >
+                  Add player
+                </button>
+              </form>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {state.players.length === 0 ? (
+                  <div className="rounded-3xl border border-dashed border-white/12 bg-white/5 px-5 py-10 text-sm text-slate-400 sm:col-span-2 xl:col-span-3">
+                    Start by adding your roster. Once players are listed here, they can tap their name and log workouts from the home screen.
+                  </div>
+                ) : null}
+
+                {leaderboard.map(({ player, season }) => {
+                  const isSelected = player.id === selectedPlayer?.id;
+
+                  return (
+                    <div
+                      key={player.id}
+                      className={`rounded-3xl border p-4 transition ${
+                        isSelected
+                          ? "border-amber-400/40 bg-amber-400/10 text-white"
+                          : "border-white/10 bg-slate-900/70 text-white hover:border-amber-400/30"
+                      }`}
+                    >
+                      <div className="w-full text-left">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-lg font-bold">{player.name}</div>
+                            <div
+                              className={`text-sm ${
+                                isSelected ? "text-amber-100/80" : "text-slate-400"
+                              }`}
+                            >
+                              #{player.jerseyNumber || "--"} · {player.graduationYear || "No grad year"}
+                            </div>
+                          </div>
+                          <div
+                            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                              isSelected
+                                ? "bg-white/10 text-white"
+                                : "bg-amber-400/10 text-amber-300"
+                            }`}
+                          >
+                            {season.workouts} workouts
+                          </div>
+                        </div>
+                        <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                          <div>
+                            <div className={isSelected ? "text-amber-100/70" : "text-slate-400"}>Avg</div>
+                            <div className="text-lg font-semibold">
+                              {formatAverage(season.averageScore)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className={isSelected ? "text-amber-100/70" : "text-slate-400"}>Total</div>
+                            <div className="text-lg font-semibold">{season.totalScore}</div>
+                          </div>
+                          <div>
+                            <div className={isSelected ? "text-amber-100/70" : "text-slate-400"}>FG%</div>
+                            <div className="text-lg font-semibold">
+                              {formatPercent(season.percentage)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePlayer(player.id)}
+                        className={`mt-4 text-sm font-semibold ${
+                          isSelected ? "text-rose-200 hover:text-white" : "text-rose-300 hover:text-rose-200"
+                        }`}
+                      >
+                        Remove player
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                <SectionHeading
+                  icon={<CalendarRange className="h-5 w-5" />}
+                  title="Season control"
+                  subtitle="Track one season at a time while keeping career totals underneath."
+                />
+
+                <div className="flex flex-wrap gap-2">
+                  {state.seasons.map((season) => (
+                    <button
+                      key={season}
+                      type="button"
+                      onClick={() =>
+                        setState((currentState) => ({
+                          ...currentState,
+                          selectedSeason: season,
+                        }))
+                      }
+                      className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                        season === state.selectedSeason
+                          ? "bg-amber-500 text-slate-950"
+                          : "bg-white/5 text-slate-300 hover:bg-white/10"
+                      }`}
+                    >
+                      {season}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <form onSubmit={handleAddSeason} className="mt-5 flex flex-col gap-3 sm:flex-row">
+                <input
+                  value={seasonForm}
+                  onChange={(event) => setSeasonForm(event.target.value)}
+                  placeholder="Add season like 2027-28"
+                  className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-amber-400"
+                />
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-amber-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-amber-400"
+                >
+                  Save season
+                </button>
+              </form>
+            </div>
+
+            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+              <div className="flex items-center justify-between">
+                <SectionHeading
+                  icon={<Trophy className="h-5 w-5" />}
+                  title="Leaderboards"
+                  subtitle="Ranked by current-season average, then current-season total score."
+                />
+              </div>
+
+              <div className="mt-5 overflow-hidden rounded-3xl border border-white/10">
+                <div className="grid grid-cols-[0.5fr_1.8fr_1fr_1fr_1fr] bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-[0.2em] text-slate-300">
+                  <span>Rank</span>
+                  <span>Player</span>
+                  <span>Avg</span>
+                  <span>Total</span>
+                  <span>FG%</span>
+                </div>
+
+                {leaderboard.length === 0 ? (
+                  <div className="px-4 py-8 text-sm text-slate-400">
+                    Add players and workouts to populate season leaderboards.
+                  </div>
+                ) : (
+                  leaderboard.map(({ player, season }, index) => (
+                    <div
+                      key={player.id}
+                      className="grid grid-cols-[0.5fr_1.8fr_1fr_1fr_1fr] items-center border-t border-white/10 px-4 py-4 text-sm text-slate-200"
+                    >
+                      <span className="font-bold text-white">{index + 1}</span>
+                      <span className="font-semibold text-slate-100">{player.name}</span>
+                      <span>{formatAverage(season.averageScore)}</span>
+                      <span>{season.totalScore}</span>
+                      <span>{formatPercent(season.percentage)}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div className="rounded-[2rem] border border-white/10 bg-slate-950 p-5 text-white shadow-[0_18px_48px_rgba(2,6,23,0.42)]">
+              <SectionHeading
+                icon={<NotebookPen className="h-5 w-5" />}
+                title="Log a workout"
+                subtitle={
+                  selectedPlayer
+                    ? `Recording for ${selectedPlayer.name} in ${state.selectedSeason}.`
+                    : "Select a player first to start logging scores."
+                }
+              />
+
+              <form onSubmit={handleLogWorkout} className="mt-5 space-y-3">
+                <input
+                  value={entryForm.workoutType}
+                  onChange={(event) =>
+                    setEntryForm((currentForm) => ({
+                      ...currentForm,
+                      workoutType: event.target.value,
+                    }))
+                  }
+                  placeholder="Workout type"
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-amber-400"
+                />
+                <input
+                  type="date"
+                  value={entryForm.workoutDate}
+                  onChange={(event) =>
+                    setEntryForm((currentForm) => ({
+                      ...currentForm,
+                      workoutDate: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+                />
+                <div className="grid grid-cols-3 gap-3">
+                  <input
+                    inputMode="numeric"
+                    value={entryForm.score}
+                    onChange={(event) =>
+                      setEntryForm((currentForm) => ({
+                        ...currentForm,
+                        score: event.target.value,
+                      }))
+                    }
+                    placeholder="Score"
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-400 focus:border-amber-400"
+                  />
+                  <input
+                    inputMode="numeric"
+                    value={entryForm.makes}
+                    onChange={(event) =>
+                      setEntryForm((currentForm) => ({
+                        ...currentForm,
+                        makes: event.target.value,
+                      }))
+                    }
+                    placeholder="Makes"
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-400 focus:border-amber-400"
+                  />
+                  <input
+                    inputMode="numeric"
+                    value={entryForm.attempts}
+                    onChange={(event) =>
+                      setEntryForm((currentForm) => ({
+                        ...currentForm,
+                        attempts: event.target.value,
+                      }))
+                    }
+                    placeholder="Attempts"
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-400 focus:border-amber-400"
+                  />
+                </div>
+                <textarea
+                  value={entryForm.notes}
+                  onChange={(event) =>
+                    setEntryForm((currentForm) => ({
+                      ...currentForm,
+                      notes: event.target.value,
+                    }))
+                  }
+                  placeholder="Notes: drill focus, gym, tired legs, competition segment"
+                  rows={4}
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-400 focus:border-amber-400"
+                />
+                <button
+                  type="submit"
+                  disabled={!selectedPlayer}
+                  className="w-full rounded-2xl bg-amber-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                >
+                  Save workout
+                </button>
+                <p className="text-xs text-slate-500">
+                  Scores persist in this browser so the app can be pinned to the phone home screen and used like a lightweight team tool.
+                </p>
+              </form>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+                  Team season
+                </div>
+                <div className="mt-3 text-3xl font-black text-white">
+                  {teamSeasonSummary.totalScore}
+                </div>
+                <div className="mt-2 text-sm text-slate-400">Total score in {state.selectedSeason}</div>
+                <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                  <div>
+                    <div className="text-slate-400">Avg</div>
+                    <div className="font-semibold text-white">
+                      {formatAverage(teamSeasonSummary.averageScore)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Workouts</div>
+                    <div className="font-semibold text-white">{teamSeasonSummary.workouts}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">FG%</div>
+                    <div className="font-semibold text-white">
+                      {formatPercent(teamSeasonSummary.percentage)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+                  Team career
+                </div>
+                <div className="mt-3 text-3xl font-black text-white">
+                  {teamCareerSummary.totalScore}
+                </div>
+                <div className="mt-2 text-sm text-slate-400">All logged workouts across every season</div>
+                <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                  <div>
+                    <div className="text-slate-400">Avg</div>
+                    <div className="font-semibold text-white">
+                      {formatAverage(teamCareerSummary.averageScore)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Makes</div>
+                    <div className="font-semibold text-white">{teamCareerSummary.makes}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Attempts</div>
+                    <div className="font-semibold text-white">{teamCareerSummary.attempts}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+              <SectionHeading
+                icon={<Medal className="h-5 w-5" />}
+                title="Player focus"
+                subtitle={
+                  selectedPlayer
+                    ? `${selectedPlayer.name}'s season and career snapshot.`
+                    : "Choose a player from the roster to see individual trends."
+                }
+              />
+
+              {selectedPlayer ? (
+                <div className="mt-5 space-y-4">
+                  <div className="rounded-3xl border border-amber-400/20 bg-amber-400/10 p-5 text-white">
+                    <div className="text-2xl font-bold">{selectedPlayer.name}</div>
+                    <div className="mt-1 text-sm text-amber-100/80">
+                      #{selectedPlayer.jerseyNumber || "--"} · Class of {selectedPlayer.graduationYear || "----"}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-amber-300">
+                        {state.selectedSeason}
+                      </div>
+                      <div className="mt-3 text-3xl font-black text-white">
+                        {selectedPlayerSeasonSummary.totalScore}
+                      </div>
+                      <div className="mt-3 text-sm text-slate-300">
+                        Avg {formatAverage(selectedPlayerSeasonSummary.averageScore)} · FG% {formatPercent(selectedPlayerSeasonSummary.percentage)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-sky-300">
+                        Career
+                      </div>
+                      <div className="mt-3 text-3xl font-black text-white">
+                        {selectedPlayerCareerSummary.totalScore}
+                      </div>
+                      <div className="mt-3 text-sm text-slate-300">
+                        Avg {formatAverage(selectedPlayerCareerSummary.averageScore)} · FG% {formatPercent(selectedPlayerCareerSummary.percentage)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+              <SectionHeading
+                icon={<BarChart3 className="h-5 w-5" />}
+                title="Recent workouts"
+                subtitle="Latest entries across the whole team."
+              />
+
+              <div className="mt-5 space-y-3">
+                {recentEntries.length === 0 ? (
+                  <div className="rounded-3xl border border-dashed border-white/12 bg-white/5 px-4 py-8 text-sm text-slate-400">
+                    No workouts logged yet.
+                  </div>
+                ) : (
+                  recentEntries.map((entry) => {
+                    const player = state.players.find(
+                      (candidate) => candidate.id === entry.playerId,
+                    );
+
+                    return (
+                      <div
+                        key={entry.id}
+                        className="rounded-3xl border border-white/10 bg-white/5 px-4 py-4"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className="font-semibold text-white">
+                              {player?.name ?? "Removed player"}
+                            </div>
+                            <div className="text-sm text-slate-400">
+                              {entry.workoutType} · {entry.workoutDate} · {entry.season}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-lg font-bold text-white">{entry.score}</div>
+                            <div className="text-sm text-slate-400">
+                              {entry.makes}/{entry.attempts} shots
+                            </div>
+                          </div>
+                        </div>
+                        {entry.notes ? (
+                          <p className="mt-3 text-sm leading-6 text-slate-300">{entry.notes}</p>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {!hydrated ? (
+          <div className="rounded-3xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-400 backdrop-blur">
+            Loading saved team data from this device.
+          </div>
+        ) : null}
       </main>
     </div>
   );
