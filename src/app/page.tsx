@@ -1,17 +1,29 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BarChart3,
   CalendarRange,
   Flame,
+  LogIn,
+  LogOut,
   Medal,
   NotebookPen,
+  Shield,
   Target,
   Trophy,
   Users,
 } from "lucide-react";
+import type { User } from "firebase/auth";
+import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
+import { onSnapshot, setDoc } from "firebase/firestore";
+import {
+  firebaseAuth,
+  googleAuthProvider,
+  isFirebaseConfigured,
+  shootingLadderStateDoc,
+} from "@/lib/firebase";
 
 type Player = {
   id: string;
@@ -51,6 +63,7 @@ type Summary = {
 };
 
 const STORAGE_KEY = "shooting-ladder:v1";
+const ADMIN_EMAIL = "gamblin.matt@gmail.com";
 
 function createId() {
   return `${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
@@ -72,6 +85,29 @@ function getDefaultState(): AppState {
     seasons: [season],
     selectedSeason: season,
     selectedPlayerId: null,
+  };
+}
+
+function normalizeStoredState(storedState: Partial<AppState>): AppState {
+  const defaultState = getDefaultState();
+  const seasons = Array.from(
+    new Set([...(storedState.seasons ?? []), defaultState.selectedSeason]),
+  );
+  const players = storedState.players ?? [];
+  const selectedPlayerId = players.some(
+    (player) => player.id === storedState.selectedPlayerId,
+  )
+    ? storedState.selectedPlayerId ?? null
+    : players[0]?.id ?? null;
+
+  return {
+    players,
+    entries: storedState.entries ?? [],
+    seasons,
+    selectedSeason: seasons.includes(storedState.selectedSeason ?? "")
+      ? (storedState.selectedSeason as string)
+      : defaultState.selectedSeason,
+    selectedPlayerId,
   };
 }
 
@@ -178,6 +214,10 @@ function BrandLockup({ compact = false }: { compact?: boolean }) {
 export default function Home() {
   const [state, setState] = useState<AppState>(getDefaultState);
   const [hydrated, setHydrated] = useState(false);
+  const [persistenceReady, setPersistenceReady] = useState(false);
+  const [authReady, setAuthReady] = useState(!isFirebaseConfigured);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [playerForm, setPlayerForm] = useState({
     name: "",
     jerseyNumber: "",
@@ -192,48 +232,114 @@ export default function Home() {
     attempts: "",
     notes: "",
   });
+  const lastSyncedStateRef = useRef<string | null>(null);
+
+  const isAdmin = authUser?.email?.toLowerCase() === ADMIN_EMAIL;
+  const canUseSharedApp = !isFirebaseConfigured || Boolean(authUser);
+  const canManageTeam = !isFirebaseConfigured || isAdmin;
+  const canLogWorkout = !isFirebaseConfigured || Boolean(authUser);
 
   useEffect(() => {
+    if (!isFirebaseConfigured || !firebaseAuth) {
+      setAuthReady(true);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(
+      firebaseAuth,
+      (nextUser) => {
+        setAuthUser(nextUser);
+        setAuthError(null);
+        setAuthReady(true);
+      },
+      () => {
+        setAuthUser(null);
+        setAuthError("Authentication could not be loaded. Refresh and try again.");
+        setAuthReady(true);
+      },
+    );
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (isFirebaseConfigured) {
+      if (!authReady) {
+        return;
+      }
+
+      if (!authUser || !shootingLadderStateDoc) {
+        setHydrated(true);
+        setPersistenceReady(false);
+        return;
+      }
+
+      const unsubscribe = onSnapshot(
+        shootingLadderStateDoc,
+        (snapshot) => {
+          if (snapshot.exists()) {
+            const normalizedState = normalizeStoredState(snapshot.data() as Partial<AppState>);
+            lastSyncedStateRef.current = JSON.stringify(normalizedState);
+            setState(normalizedState);
+          }
+
+          setHydrated(true);
+          setPersistenceReady(true);
+        },
+        () => {
+          setAuthError("Connected to Firebase, but the shared team data could not be loaded.");
+          setHydrated(true);
+          setPersistenceReady(false);
+        },
+      );
+
+      return unsubscribe;
+    }
+
+    if (isFirebaseConfigured && shootingLadderStateDoc) {
+      return;
+    }
+
     try {
       const storedState = window.localStorage.getItem(STORAGE_KEY);
 
       if (storedState) {
-        const parsedState = JSON.parse(storedState) as Partial<AppState>;
-        const defaultState = getDefaultState();
-        const seasons = Array.from(
-          new Set([...(parsedState.seasons ?? []), defaultState.selectedSeason]),
-        );
-        const players = parsedState.players ?? [];
-        const selectedPlayerId = players.some(
-          (player) => player.id === parsedState.selectedPlayerId,
-        )
-          ? parsedState.selectedPlayerId ?? null
-          : players[0]?.id ?? null;
-
-        setState({
-          players,
-          entries: parsedState.entries ?? [],
-          seasons,
-          selectedSeason: seasons.includes(parsedState.selectedSeason ?? "")
-            ? (parsedState.selectedSeason as string)
-            : defaultState.selectedSeason,
-          selectedPlayerId,
-        });
+        const normalizedState = normalizeStoredState(JSON.parse(storedState) as Partial<AppState>);
+        lastSyncedStateRef.current = JSON.stringify(normalizedState);
+        setState(normalizedState);
       }
     } catch {
       window.localStorage.removeItem(STORAGE_KEY);
     } finally {
       setHydrated(true);
+      setPersistenceReady(true);
     }
-  }, []);
+  }, [authReady, authUser]);
 
   useEffect(() => {
-    if (!hydrated) {
+    if (!hydrated || !persistenceReady) {
       return;
     }
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [hydrated, state]);
+    const serializedState = JSON.stringify(state);
+
+    if (serializedState === lastSyncedStateRef.current) {
+      return;
+    }
+
+    if (isFirebaseConfigured && shootingLadderStateDoc) {
+      if (!authReady || !authUser) {
+        return;
+      }
+
+      lastSyncedStateRef.current = serializedState;
+      void setDoc(shootingLadderStateDoc, state, { merge: true });
+      return;
+    }
+
+    lastSyncedStateRef.current = serializedState;
+    window.localStorage.setItem(STORAGE_KEY, serializedState);
+  }, [authReady, authUser, hydrated, persistenceReady, state]);
 
   const selectedPlayer =
     state.players.find((player) => player.id === state.selectedPlayerId) ?? null;
@@ -399,6 +505,31 @@ export default function Home() {
     setSeasonForm(resetState.selectedSeason);
   }
 
+  async function handleSignIn() {
+    if (!firebaseAuth || !googleAuthProvider) {
+      return;
+    }
+
+    try {
+      setAuthError(null);
+      await signInWithPopup(firebaseAuth, googleAuthProvider);
+    } catch {
+      setAuthError("Google sign-in did not complete. Try again.");
+    }
+  }
+
+  async function handleSignOut() {
+    if (!firebaseAuth) {
+      return;
+    }
+
+    try {
+      await signOut(firebaseAuth);
+    } catch {
+      setAuthError("Sign-out failed. Refresh the page and try again.");
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,#1e293b_0,#0f172a_42%,#020617_100%)] pb-24 text-white">
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
@@ -422,38 +553,94 @@ export default function Home() {
               </h1>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard
-                label="Roster"
-                value={state.players.length}
-                detail="Players currently loaded"
-                icon={<Users className="h-5 w-5" />}
-                accent="border-sky-400/20 bg-sky-400/10 text-sky-300"
-              />
-              <StatCard
-                label="Season"
-                value={state.selectedSeason}
-                detail="Current leaderboard scope"
-                icon={<CalendarRange className="h-5 w-5" />}
-                accent="border-amber-400/20 bg-amber-400/10 text-amber-300"
-              />
-              <StatCard
-                label="Entries"
-                value={state.entries.length}
-                detail="Logged workouts in browser"
-                icon={<NotebookPen className="h-5 w-5" />}
-                accent="border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
-              />
-              <StatCard
-                label="Career Avg"
-                value={formatAverage(teamCareerSummary.averageScore)}
-                detail="Average score across all seasons"
-                icon={<Flame className="h-5 w-5" />}
-                accent="border-rose-400/20 bg-rose-400/10 text-rose-300"
-              />
+            <div className="flex w-full max-w-[28rem] flex-col gap-3 lg:items-end">
+              {isFirebaseConfigured ? (
+                <div className="w-full rounded-[1.6rem] border border-white/10 bg-white/5 p-4 shadow-[0_18px_45px_rgba(2,6,23,0.22)]">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-400">
+                        Team access
+                      </div>
+                      {authUser ? (
+                        <div className="mt-2">
+                          <div className="font-semibold text-white">{authUser.email}</div>
+                          <div className="mt-1 flex flex-wrap gap-2">
+                            <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">
+                              Signed in
+                            </span>
+                            {isAdmin ? (
+                              <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">
+                                <Shield className="h-3.5 w-3.5" /> Coach admin
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-sm text-slate-300">
+                          Sign in with Google to access the shared team dashboard.
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={authUser ? handleSignOut : handleSignIn}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-400"
+                    >
+                      {authUser ? <LogOut className="h-4 w-4" /> : <LogIn className="h-4 w-4" />}
+                      {authUser ? "Sign out" : "Sign in with Google"}
+                    </button>
+                  </div>
+                  {authError ? (
+                    <p className="mt-3 text-sm text-rose-300">{authError}</p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="grid w-full grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard
+                  label="Roster"
+                  value={state.players.length}
+                  detail="Players currently loaded"
+                  icon={<Users className="h-5 w-5" />}
+                  accent="border-sky-400/20 bg-sky-400/10 text-sky-300"
+                />
+                <StatCard
+                  label="Season"
+                  value={state.selectedSeason}
+                  detail="Current leaderboard scope"
+                  icon={<CalendarRange className="h-5 w-5" />}
+                  accent="border-amber-400/20 bg-amber-400/10 text-amber-300"
+                />
+                <StatCard
+                  label="Entries"
+                  value={state.entries.length}
+                  detail="Logged workouts in browser"
+                  icon={<NotebookPen className="h-5 w-5" />}
+                  accent="border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+                />
+                <StatCard
+                  label="Career Avg"
+                  value={formatAverage(teamCareerSummary.averageScore)}
+                  detail="Average score across all seasons"
+                  icon={<Flame className="h-5 w-5" />}
+                  accent="border-rose-400/20 bg-rose-400/10 text-rose-300"
+                />
+              </div>
             </div>
           </div>
         </section>
+
+        {isFirebaseConfigured && !authReady ? (
+          <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 px-5 py-4 text-sm text-slate-300 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+            Checking Google sign-in status.
+          </section>
+        ) : null}
+
+        {isFirebaseConfigured && authReady && !authUser ? (
+          <section className="rounded-[2rem] border border-amber-400/20 bg-amber-400/10 px-5 py-4 text-sm text-amber-100 shadow-[0_18px_48px_rgba(2,6,23,0.18)]">
+            Sign in with your Google account to load the shared Top Tier Basketball team data.
+          </section>
+        ) : null}
 
         <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-6">
@@ -467,6 +654,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={clearAllData}
+                  disabled={!canManageTeam}
                   className="rounded-full border border-white/12 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-amber-400/40 hover:text-white"
                 >
                   Reset app
@@ -485,6 +673,7 @@ export default function Home() {
                       selectedPlayerId: event.target.value || null,
                     }))
                   }
+                  disabled={!canLogWorkout}
                   className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-amber-400"
                 >
                   <option value="" disabled className="bg-slate-950 text-slate-300">
@@ -512,6 +701,7 @@ export default function Home() {
                       name: event.target.value,
                     }))
                   }
+                  disabled={!canManageTeam}
                   placeholder="Player name"
                   className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-0 transition placeholder:text-slate-500 focus:border-amber-400"
                 />
@@ -523,6 +713,7 @@ export default function Home() {
                       jerseyNumber: event.target.value,
                     }))
                   }
+                  disabled={!canManageTeam}
                   placeholder="Jersey"
                   className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-0 transition placeholder:text-slate-500 focus:border-amber-400"
                 />
@@ -534,11 +725,13 @@ export default function Home() {
                       graduationYear: event.target.value,
                     }))
                   }
+                  disabled={!canManageTeam}
                   placeholder="Grad year"
                   className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-0 transition placeholder:text-slate-500 focus:border-amber-400"
                 />
                 <button
                   type="submit"
+                  disabled={!canManageTeam}
                   className="rounded-2xl bg-amber-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-400"
                 >
                   Add player
@@ -608,6 +801,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() => handleRemovePlayer(player.id)}
+                        disabled={!canManageTeam}
                         className={`mt-4 text-sm font-semibold ${
                           isSelected ? "text-rose-200 hover:text-white" : "text-rose-300 hover:text-rose-200"
                         }`}
@@ -639,6 +833,7 @@ export default function Home() {
                           selectedSeason: season,
                         }))
                       }
+                      disabled={!canUseSharedApp}
                       className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
                         season === state.selectedSeason
                           ? "bg-amber-500 text-slate-950"
@@ -655,11 +850,13 @@ export default function Home() {
                 <input
                   value={seasonForm}
                   onChange={(event) => setSeasonForm(event.target.value)}
+                  disabled={!canManageTeam}
                   placeholder="Add season like 2027-28"
                   className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-amber-400"
                 />
                 <button
                   type="submit"
+                  disabled={!canManageTeam}
                   className="rounded-2xl bg-amber-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-amber-400"
                 >
                   Save season
@@ -728,6 +925,7 @@ export default function Home() {
                       workoutType: event.target.value,
                     }))
                   }
+                  disabled={!canLogWorkout}
                   placeholder="Workout type"
                   className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-amber-400"
                 />
@@ -740,6 +938,7 @@ export default function Home() {
                       workoutDate: event.target.value,
                     }))
                   }
+                  disabled={!canLogWorkout}
                   className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-amber-400"
                 />
                 <div className="grid grid-cols-3 gap-3">
@@ -752,6 +951,7 @@ export default function Home() {
                         score: event.target.value,
                       }))
                     }
+                    disabled={!canLogWorkout}
                     placeholder="Score"
                     className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-400 focus:border-amber-400"
                   />
@@ -764,6 +964,7 @@ export default function Home() {
                         makes: event.target.value,
                       }))
                     }
+                    disabled={!canLogWorkout}
                     placeholder="Makes"
                     className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-400 focus:border-amber-400"
                   />
@@ -776,6 +977,7 @@ export default function Home() {
                         attempts: event.target.value,
                       }))
                     }
+                    disabled={!canLogWorkout}
                     placeholder="Attempts"
                     className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-400 focus:border-amber-400"
                   />
@@ -788,19 +990,22 @@ export default function Home() {
                       notes: event.target.value,
                     }))
                   }
+                  disabled={!canLogWorkout}
                   placeholder="Notes: drill focus, gym, tired legs, competition segment"
                   rows={4}
                   className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-400 focus:border-amber-400"
                 />
                 <button
                   type="submit"
-                  disabled={!selectedPlayer}
+                  disabled={!selectedPlayer || !canLogWorkout}
                   className="w-full rounded-2xl bg-amber-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                 >
                   Save workout
                 </button>
                 <p className="text-xs text-slate-500">
-                  Scores persist in this browser so the app can be pinned to the phone home screen and used like a lightweight team tool.
+                  {isFirebaseConfigured
+                    ? "Shared team data syncs through Firebase once you sign in with Google."
+                    : "Scores persist in this browser so the app can be pinned to the phone home screen and used like a lightweight team tool."}
                 </p>
               </form>
             </div>
@@ -963,7 +1168,9 @@ export default function Home() {
 
         {!hydrated ? (
           <div className="rounded-3xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-400 backdrop-blur">
-            Loading saved team data from this device.
+            {isFirebaseConfigured
+              ? "Loading shared team data from Firebase."
+              : "Loading saved team data from this device."}
           </div>
         ) : null}
       </main>
