@@ -16,7 +16,12 @@ import {
   Users,
 } from "lucide-react";
 import type { User } from "firebase/auth";
-import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+} from "firebase/auth";
 import { onSnapshot, setDoc } from "firebase/firestore";
 import {
   firebaseAuth,
@@ -218,6 +223,11 @@ export default function Home() {
   const [authReady, setAuthReady] = useState(!isFirebaseConfigured);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [emailForm, setEmailForm] = useState({
+    email: "",
+    password: "",
+  });
   const [playerForm, setPlayerForm] = useState({
     name: "",
     jerseyNumber: "",
@@ -511,10 +521,39 @@ export default function Home() {
     }
 
     try {
+      setAuthBusy(true);
       setAuthError(null);
       await signInWithPopup(firebaseAuth, googleAuthProvider);
     } catch {
       setAuthError("Google sign-in did not complete. Try again.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleEmailSignIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!firebaseAuth) {
+      return;
+    }
+
+    const email = emailForm.email.trim();
+    const password = emailForm.password;
+
+    if (!email || !password) {
+      setAuthError("Enter both email and password.");
+      return;
+    }
+
+    try {
+      setAuthBusy(true);
+      setAuthError(null);
+      await signInWithEmailAndPassword(firebaseAuth, email, password);
+    } catch {
+      setAuthError("Email sign-in failed. Check your credentials and try again.");
+    } finally {
+      setAuthBusy(false);
     }
   }
 
@@ -556,39 +595,92 @@ export default function Home() {
             <div className="flex w-full max-w-[28rem] flex-col gap-3 lg:items-end">
               {isFirebaseConfigured ? (
                 <div className="w-full rounded-[1.6rem] border border-white/10 bg-white/5 p-4 shadow-[0_18px_45px_rgba(2,6,23,0.22)]">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-400">
-                        Team access
-                      </div>
-                      {authUser ? (
-                        <div className="mt-2">
-                          <div className="font-semibold text-white">{authUser.email}</div>
-                          <div className="mt-1 flex flex-wrap gap-2">
-                            <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">
-                              Signed in
-                            </span>
-                            {isAdmin ? (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">
-                                <Shield className="h-3.5 w-3.5" /> Coach admin
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-400">
+                          Team access
+                        </div>
+                        {authUser ? (
+                          <div className="mt-2">
+                            <div className="font-semibold text-white">{authUser.email}</div>
+                            <div className="mt-1 flex flex-wrap gap-2">
+                              <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">
+                                Signed in
                               </span>
-                            ) : null}
+                              {isAdmin ? (
+                                <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">
+                                  <Shield className="h-3.5 w-3.5" /> Coach admin
+                                </span>
+                              ) : null}
+                            </div>
                           </div>
-                        </div>
-                      ) : (
-                        <div className="mt-2 text-sm text-slate-300">
-                          Sign in with Google to access the shared team dashboard.
-                        </div>
-                      )}
+                        ) : (
+                          <div className="mt-2 text-sm text-slate-300">
+                            Sign in with Google or your email/password account to access the shared team dashboard.
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={authUser ? handleSignOut : handleSignIn}
+                        disabled={authBusy}
+                        className="inline-flex items-center justify-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        {authUser ? <LogOut className="h-4 w-4" /> : <LogIn className="h-4 w-4" />}
+                        {authUser ? "Sign out" : "Sign in with Google"}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={authUser ? handleSignOut : handleSignIn}
-                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-400"
-                    >
-                      {authUser ? <LogOut className="h-4 w-4" /> : <LogIn className="h-4 w-4" />}
-                      {authUser ? "Sign out" : "Sign in with Google"}
-                    </button>
+
+                    {!authUser ? (
+                      <form onSubmit={handleEmailSignIn} className="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-end">
+                        <label className="grid gap-1.5">
+                          <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">
+                            Email
+                          </span>
+                          <input
+                            type="email"
+                            autoComplete="email"
+                            value={emailForm.email}
+                            onChange={(event) =>
+                              setEmailForm((currentForm) => ({
+                                ...currentForm,
+                                email: event.target.value,
+                              }))
+                            }
+                            className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-amber-400"
+                            placeholder="coach@school.edu"
+                          />
+                        </label>
+
+                        <label className="grid gap-1.5">
+                          <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">
+                            Password
+                          </span>
+                          <input
+                            type="password"
+                            autoComplete="current-password"
+                            value={emailForm.password}
+                            onChange={(event) =>
+                              setEmailForm((currentForm) => ({
+                                ...currentForm,
+                                password: event.target.value,
+                              }))
+                            }
+                            className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-amber-400"
+                            placeholder="Password"
+                          />
+                        </label>
+
+                        <button
+                          type="submit"
+                          disabled={authBusy}
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 font-semibold text-slate-950 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {authBusy ? "Signing in..." : "Sign in with email"}
+                        </button>
+                      </form>
+                    ) : null}
                   </div>
                   {authError ? (
                     <p className="mt-3 text-sm text-rose-300">{authError}</p>
