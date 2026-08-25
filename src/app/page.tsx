@@ -34,7 +34,6 @@ type Player = {
   id: string;
   name: string;
   jerseyNumber: string;
-  graduationYear: string;
 };
 
 type WorkoutEntry = {
@@ -103,7 +102,7 @@ function normalizeStoredState(storedState: Partial<AppState>): AppState {
   const seasons = Array.from(
     new Set([...(storedState.seasons ?? []), defaultState.selectedSeason]),
   );
-  const players = storedState.players ?? [];
+  const players = (storedState.players ?? []).map(({ graduationYear: _graduationYear, ...player }) => player);
   const selectedPlayerId = players.some(
     (player) => player.id === storedState.selectedPlayerId,
   )
@@ -258,7 +257,6 @@ export default function Home() {
   const [playerForm, setPlayerForm] = useState({
     name: "",
     jerseyNumber: "",
-    graduationYear: "",
   });
   const [seasonForm, setSeasonForm] = useState(getCurrentSeason());
   const [entryForm, setEntryForm] = useState({
@@ -482,7 +480,6 @@ export default function Home() {
       id: createId(),
       name,
       jerseyNumber: playerForm.jerseyNumber.trim(),
-      graduationYear: playerForm.graduationYear.trim(),
     };
 
     setState((currentState) => ({
@@ -490,7 +487,7 @@ export default function Home() {
       players: [...currentState.players, nextPlayer],
       selectedPlayerId: currentState.selectedPlayerId ?? nextPlayer.id,
     }));
-    setPlayerForm({ name: "", jerseyNumber: "", graduationYear: "" });
+    setPlayerForm({ name: "", jerseyNumber: "" });
   }
 
   function handleRemovePlayer(playerId: string) {
@@ -882,18 +879,6 @@ export default function Home() {
                   placeholder="Jersey"
                   className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-0 transition placeholder:text-slate-500 focus:border-amber-400"
                 />
-                <input
-                  value={playerForm.graduationYear}
-                  onChange={(event) =>
-                    setPlayerForm((currentForm) => ({
-                      ...currentForm,
-                      graduationYear: event.target.value,
-                    }))
-                  }
-                  disabled={!canManageTeam}
-                  placeholder="Grad year"
-                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none ring-0 transition placeholder:text-slate-500 focus:border-amber-400"
-                />
                 <button
                   type="submit"
                   disabled={!canManageTeam}
@@ -931,7 +916,7 @@ export default function Home() {
                                 isSelected ? "text-amber-100/80" : "text-slate-400"
                               }`}
                             >
-                              #{player.jerseyNumber || "--"} · {player.graduationYear || "No grad year"}
+                              #{player.jerseyNumber || "--"}
                             </div>
                           </div>
                           <div
@@ -1146,6 +1131,32 @@ export default function Home() {
               />
 
               <form onSubmit={handleLogWorkout} className="mt-5 space-y-3">
+                <div className="grid gap-1.5">
+                  <label className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">
+                    Player
+                  </label>
+                  <select
+                    value={state.selectedPlayerId ?? ""}
+                    onChange={(event) =>
+                      setState((currentState) => ({
+                        ...currentState,
+                        selectedPlayerId: event.target.value || null,
+                      }))
+                    }
+                    disabled={!canLogWorkout}
+                    className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+                  >
+                    <option value="" disabled className="bg-slate-950 text-slate-300">
+                      Select player
+                    </option>
+                    {state.players.map((player) => (
+                      <option key={player.id} value={player.id} className="bg-slate-950 text-white">
+                        {player.name}
+                        {player.jerseyNumber ? ` #${player.jerseyNumber}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <select
                   value={entryForm.workoutType}
                   onChange={(event) =>
@@ -1315,8 +1326,8 @@ export default function Home() {
                 <div className="mt-5 space-y-4">
                   <div className="rounded-3xl border border-amber-400/20 bg-amber-400/10 p-5 text-white">
                     <div className="text-2xl font-bold">{selectedPlayer.name}</div>
-                    <div className="mt-1 text-sm text-amber-100/80">
-                      #{selectedPlayer.jerseyNumber || "--"} · Class of {selectedPlayer.graduationYear || "----"}
+                      <div className="mt-1 text-sm text-amber-100/80">
+                      #{selectedPlayer.jerseyNumber || "--"}
                     </div>
                   </div>
 

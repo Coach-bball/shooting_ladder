@@ -1,6 +1,7 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { doc, getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -22,6 +23,7 @@ export const firebaseApp = hasConfig
 export const firestoreDb = firebaseApp ? getFirestore(firebaseApp) : null;
 export const firebaseAuth = firebaseApp ? getAuth(firebaseApp) : null;
 export const googleAuthProvider = firebaseApp ? new GoogleAuthProvider() : null;
+export const firebaseStorage = firebaseApp ? getStorage(firebaseApp) : null;
 
 export const shootingLadderStateDoc = firestoreDb
   ? doc(firestoreDb, "teams", "default", "state", "main")
