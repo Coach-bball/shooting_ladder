@@ -102,7 +102,11 @@ function normalizeStoredState(storedState: Partial<AppState>): AppState {
   const seasons = Array.from(
     new Set([...(storedState.seasons ?? []), defaultState.selectedSeason]),
   );
-  const players = (storedState.players ?? []).map(({ graduationYear: _graduationYear, ...player }) => player);
+  const players = (storedState.players ?? []).map((player) => ({
+    id: player.id,
+    name: player.name,
+    jerseyNumber: player.jerseyNumber,
+  }));
   const selectedPlayerId = players.some(
     (player) => player.id === storedState.selectedPlayerId,
   )
