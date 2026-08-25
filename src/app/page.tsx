@@ -67,6 +67,11 @@ type Summary = {
   percentage: number;
 };
 
+type MobilePanel = "log" | "roster" | "insights";
+
+const DEFAULT_DRILL = "Ladder";
+const DRILL_OPTIONS = [DEFAULT_DRILL, "And 1", "Ducks Shooting", "Panther 100"];
+
 const STORAGE_KEY = "shooting-ladder:v1";
 const ADMIN_EMAIL = "gamblin.matt@gmail.com";
 
@@ -136,6 +141,27 @@ function summarizeEntries(entries: WorkoutEntry[]): Summary {
     attempts: totals.attempts,
     percentage: totals.attempts ? (totals.makes / totals.attempts) * 100 : 0,
   };
+}
+
+function normalizeDrillName(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function getDrillEntries(entries: WorkoutEntry[], drillName: string) {
+  const normalizedDrillName = normalizeDrillName(drillName);
+
+  return entries.filter(
+    (entry) => normalizeDrillName(entry.workoutType) === normalizedDrillName,
+  );
+}
+
+function getDistinctDrills(entries: WorkoutEntry[]) {
+  return Array.from(
+    new Set([
+      ...DRILL_OPTIONS,
+      ...entries.map((entry) => entry.workoutType.trim()).filter(Boolean),
+    ]),
+  );
 }
 
 function formatPercent(value: number) {
@@ -228,6 +254,7 @@ export default function Home() {
     email: "",
     password: "",
   });
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>("log");
   const [playerForm, setPlayerForm] = useState({
     name: "",
     jerseyNumber: "",
@@ -235,7 +262,7 @@ export default function Home() {
   });
   const [seasonForm, setSeasonForm] = useState(getCurrentSeason());
   const [entryForm, setEntryForm] = useState({
-    workoutType: "Daily shooting",
+    workoutType: DEFAULT_DRILL,
     workoutDate: new Date().toISOString().slice(0, 10),
     score: "",
     makes: "",
@@ -399,6 +426,49 @@ export default function Home() {
         state.entries.filter((entry) => entry.playerId === selectedPlayer.id),
       )
     : summarizeEntries([]);
+  const drillLeaderboards = getDistinctDrills(state.entries).map((drillName) => {
+    const drillEntries = getDrillEntries(state.entries, drillName);
+
+    const playerRows = state.players
+      .map((player) => {
+        const playerDrillEntries = drillEntries.filter(
+          (entry) => entry.playerId === player.id,
+        );
+
+        return {
+          player,
+          summary: summarizeEntries(playerDrillEntries),
+          bestScore: playerDrillEntries.reduce(
+            (best, entry) => Math.max(best, entry.score),
+            0,
+          ),
+        };
+      })
+      .filter((row) => row.summary.workouts > 0)
+      .sort((left, right) => {
+        if (right.bestScore !== left.bestScore) {
+          return right.bestScore - left.bestScore;
+        }
+
+        if (right.summary.averageScore !== left.summary.averageScore) {
+          return right.summary.averageScore - left.summary.averageScore;
+        }
+
+        return right.summary.totalScore - left.summary.totalScore;
+      });
+
+    return { drillName, playerRows };
+  });
+
+  const mobilePanelButtonClass = (panel: MobilePanel) =>
+    `flex-1 rounded-full px-4 py-2.5 text-sm font-semibold transition ${
+      mobilePanel === panel
+        ? "bg-amber-500 text-slate-950 shadow-[0_12px_24px_rgba(245,158,11,0.24)]"
+        : "bg-white/5 text-slate-300 hover:bg-white/10"
+    }`;
+
+  const panelVisibilityClass = (panel: MobilePanel) =>
+    mobilePanel === panel ? "block" : "hidden";
 
   function handleAddPlayer(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -576,20 +646,9 @@ export default function Home() {
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-2xl space-y-3">
               <BrandLockup />
-              <div className="flex flex-wrap gap-2">
-                <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-amber-300">
-                  <Target className="h-3.5 w-3.5" /> Top Tier Basketball
-                </span>
-                <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-slate-300">
-                  <BarChart3 className="h-3.5 w-3.5" /> TopTierStats-inspired dashboard
-                </span>
-              </div>
               <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-300">
                 Year-round shooting development
               </p>
-              <h1 className="text-4xl font-black tracking-tight text-white sm:text-5xl">
-                Top Tier Basketball keeps every shooting workout, season climb, and career standard in one place.
-              </h1>
             </div>
 
             <div className="flex w-full max-w-[28rem] flex-col gap-3 lg:items-end">
@@ -688,7 +747,7 @@ export default function Home() {
                 </div>
               ) : null}
 
-              <div className="grid w-full grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="hidden w-full grid-cols-2 gap-3 sm:grid sm:grid-cols-4">
                 <StatCard
                   label="Roster"
                   value={state.players.length}
@@ -722,6 +781,20 @@ export default function Home() {
           </div>
         </section>
 
+        <section className="rounded-[1.75rem] border border-white/10 bg-slate-950/85 p-3 shadow-[0_18px_48px_rgba(2,6,23,0.28)] lg:hidden">
+          <div className="flex gap-2 rounded-full border border-white/10 bg-white/5 p-1">
+            <button type="button" onClick={() => setMobilePanel("log")} className={mobilePanelButtonClass("log")}>
+              Log
+            </button>
+            <button type="button" onClick={() => setMobilePanel("roster")} className={mobilePanelButtonClass("roster")}>
+              Roster
+            </button>
+            <button type="button" onClick={() => setMobilePanel("insights")} className={mobilePanelButtonClass("insights")}>
+              Insights
+            </button>
+          </div>
+        </section>
+
         {isFirebaseConfigured && !authReady ? (
           <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 px-5 py-4 text-sm text-slate-300 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
             Checking Google sign-in status.
@@ -736,7 +809,7 @@ export default function Home() {
 
         <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-6">
-            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+            <div className={`${panelVisibilityClass("roster")} rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)] lg:block`}>
               <div className="flex items-center justify-between gap-4">
                 <SectionHeading
                   icon={<Users className="h-5 w-5" />}
@@ -906,7 +979,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+            <div className={`${panelVisibilityClass("roster")} rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)] lg:block`}>
               <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <SectionHeading
                   icon={<CalendarRange className="h-5 w-5" />}
@@ -956,7 +1029,7 @@ export default function Home() {
               </form>
             </div>
 
-            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+            <div className={`${panelVisibilityClass("insights")} rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)] lg:block`}>
               <div className="flex items-center justify-between">
                 <SectionHeading
                   icon={<Trophy className="h-5 w-5" />}
@@ -994,10 +1067,74 @@ export default function Home() {
                 )}
               </div>
             </div>
+
+            <div className={`${panelVisibilityClass("insights")} rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)] lg:block`}>
+              <SectionHeading
+                icon={<Target className="h-5 w-5" />}
+                title="Drill leaderboards"
+                subtitle="Best scores for each distinct drill, ranked by player."
+              />
+
+              <div className="mt-5 space-y-4">
+                {drillLeaderboards.length === 0 ? (
+                  <div className="rounded-3xl border border-dashed border-white/12 bg-white/5 px-4 py-8 text-sm text-slate-400">
+                    Log Ladder and the other drill types to generate drill-specific leaderboards.
+                  </div>
+                ) : (
+                  drillLeaderboards.map(({ drillName, playerRows }) => (
+                    <div
+                      key={drillName}
+                      className="overflow-hidden rounded-3xl border border-white/10 bg-white/5"
+                    >
+                      <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+                        <div>
+                          <div className="text-sm font-bold uppercase tracking-[0.2em] text-amber-300">
+                            {drillName}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            Highest score per player for this drill
+                          </div>
+                        </div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                          {playerRows.length} players
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-[0.55fr_1.8fr_0.8fr_0.8fr_0.9fr] bg-white/5 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">
+                        <span>Rank</span>
+                        <span>Player</span>
+                        <span>Best</span>
+                        <span>Avg</span>
+                        <span>Workouts</span>
+                      </div>
+
+                      {playerRows.length === 0 ? (
+                        <div className="px-4 py-6 text-sm text-slate-400">
+                          No scores logged for this drill yet.
+                        </div>
+                      ) : (
+                        playerRows.slice(0, 6).map(({ player, summary, bestScore }, index) => (
+                          <div
+                            key={`${drillName}-${player.id}`}
+                            className="grid grid-cols-[0.55fr_1.8fr_0.8fr_0.8fr_0.9fr] items-center border-t border-white/10 px-4 py-3 text-sm text-slate-200"
+                          >
+                            <span className="font-bold text-white">{index + 1}</span>
+                            <span className="font-semibold text-slate-100">{player.name}</span>
+                            <span className="font-semibold text-white">{bestScore}</span>
+                            <span>{formatAverage(summary.averageScore)}</span>
+                            <span>{summary.workouts}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="space-y-6">
-            <div className="rounded-[2rem] border border-white/10 bg-slate-950 p-5 text-white shadow-[0_18px_48px_rgba(2,6,23,0.42)]">
+            <div className={`${panelVisibilityClass("log")} rounded-[2rem] border border-white/10 bg-slate-950 p-5 text-white shadow-[0_18px_48px_rgba(2,6,23,0.42)] lg:block`}>
               <SectionHeading
                 icon={<NotebookPen className="h-5 w-5" />}
                 title="Log a workout"
@@ -1009,7 +1146,7 @@ export default function Home() {
               />
 
               <form onSubmit={handleLogWorkout} className="mt-5 space-y-3">
-                <input
+                <select
                   value={entryForm.workoutType}
                   onChange={(event) =>
                     setEntryForm((currentForm) => ({
@@ -1018,9 +1155,14 @@ export default function Home() {
                     }))
                   }
                   disabled={!canLogWorkout}
-                  placeholder="Workout type"
-                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-amber-400"
-                />
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+                >
+                  {DRILL_OPTIONS.map((drill) => (
+                    <option key={drill} value={drill} className="bg-slate-950 text-white">
+                      {drill}
+                    </option>
+                  ))}
+                </select>
                 <input
                   type="date"
                   value={entryForm.workoutDate}
@@ -1102,7 +1244,7 @@ export default function Home() {
               </form>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className={`${panelVisibilityClass("insights")} grid gap-4 sm:grid-cols-2 lg:grid lg:gap-4`}>
               <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
                 <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
                   Team season
@@ -1158,7 +1300,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+            <div className={`${panelVisibilityClass("insights")} rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)] lg:block`}>
               <SectionHeading
                 icon={<Medal className="h-5 w-5" />}
                 title="Player focus"
@@ -1207,7 +1349,7 @@ export default function Home() {
               ) : null}
             </div>
 
-            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)]">
+            <div className={`${panelVisibilityClass("insights")} rounded-[2rem] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_48px_rgba(2,6,23,0.28)] lg:block`}>
               <SectionHeading
                 icon={<BarChart3 className="h-5 w-5" />}
                 title="Recent workouts"
