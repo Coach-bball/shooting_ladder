@@ -66,6 +66,13 @@ type Summary = {
   percentage: number;
 };
 
+type DrillLeaderboardRow = {
+  player: Player;
+  summary: Summary;
+  bestScore: number | null;
+  rank: number | null;
+};
+
 type MobilePanel = "log" | "roster" | "insights";
 
 const DEFAULT_DRILL = "Ladder";
@@ -83,6 +90,12 @@ function getCurrentSeason() {
   const year = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
   const nextYear = (year + 1).toString().slice(-2);
   return `${year}-${nextYear}`;
+}
+
+function getTodayDateString() {
+  const now = new Date();
+  const offsetMilliseconds = now.getTimezoneOffset() * 60 * 1000;
+  return new Date(now.getTime() - offsetMilliseconds).toISOString().slice(0, 10);
 }
 
 function getDefaultState(): AppState {
@@ -165,6 +178,48 @@ function getDistinctDrills(entries: WorkoutEntry[]) {
       ...entries.map((entry) => entry.workoutType.trim()).filter(Boolean),
     ]),
   );
+}
+
+function buildDrillLeaderboardRows(
+  players: Player[],
+  drillEntries: WorkoutEntry[],
+): DrillLeaderboardRow[] {
+  const rows = players.map((player) => {
+    const playerDrillEntries = drillEntries.filter(
+      (entry) => entry.playerId === player.id,
+    );
+    const summary = summarizeEntries(playerDrillEntries);
+
+    return {
+      player,
+      summary,
+      bestScore: summary.workouts
+        ? playerDrillEntries.reduce((best, entry) => Math.max(best, entry.score), 0)
+        : null,
+      rank: null,
+    };
+  });
+
+  const activeRows = rows
+    .filter((row) => row.summary.workouts > 0)
+    .sort((left, right) => {
+      if ((right.bestScore ?? 0) !== (left.bestScore ?? 0)) {
+        return (right.bestScore ?? 0) - (left.bestScore ?? 0);
+      }
+
+      if (right.summary.averageScore !== left.summary.averageScore) {
+        return right.summary.averageScore - left.summary.averageScore;
+      }
+
+      return right.summary.totalScore - left.summary.totalScore;
+    })
+    .map((row, index) => ({ ...row, rank: index + 1 }));
+
+  const inactiveRows = rows
+    .filter((row) => row.summary.workouts === 0)
+    .sort((left, right) => left.player.name.localeCompare(right.player.name));
+
+  return [...activeRows, ...inactiveRows];
 }
 
 function formatPercent(value: number) {
@@ -265,7 +320,7 @@ export default function Home() {
   const [seasonForm, setSeasonForm] = useState(getCurrentSeason());
   const [entryForm, setEntryForm] = useState({
     workoutType: DEFAULT_DRILL,
-    workoutDate: new Date().toISOString().slice(0, 10),
+    workoutDate: getTodayDateString(),
     score: "",
     makes: "",
     attempts: "",
@@ -428,38 +483,18 @@ export default function Home() {
         state.entries.filter((entry) => entry.playerId === selectedPlayer.id),
       )
     : summarizeEntries([]);
+  const todayDate = getTodayDateString();
   const drillLeaderboards = getDistinctDrills(state.entries).map((drillName) => {
-    const drillEntries = getDrillEntries(state.entries, drillName);
+    const allTimeEntries = getDrillEntries(state.entries, drillName);
+    const todayEntries = allTimeEntries.filter(
+      (entry) => entry.workoutDate === todayDate,
+    );
 
-    const playerRows = state.players
-      .map((player) => {
-        const playerDrillEntries = drillEntries.filter(
-          (entry) => entry.playerId === player.id,
-        );
-
-        return {
-          player,
-          summary: summarizeEntries(playerDrillEntries),
-          bestScore: playerDrillEntries.reduce(
-            (best, entry) => Math.max(best, entry.score),
-            0,
-          ),
-        };
-      })
-      .filter((row) => row.summary.workouts > 0)
-      .sort((left, right) => {
-        if (right.bestScore !== left.bestScore) {
-          return right.bestScore - left.bestScore;
-        }
-
-        if (right.summary.averageScore !== left.summary.averageScore) {
-          return right.summary.averageScore - left.summary.averageScore;
-        }
-
-        return right.summary.totalScore - left.summary.totalScore;
-      });
-
-    return { drillName, playerRows };
+    return {
+      drillName,
+      allTimeRows: buildDrillLeaderboardRows(state.players, allTimeEntries),
+      todayRows: buildDrillLeaderboardRows(state.players, todayEntries),
+    };
   });
 
   const mobilePanelButtonClass = (panel: MobilePanel) =>
@@ -558,7 +593,7 @@ export default function Home() {
       id: createId(),
       playerId: selectedPlayer.id,
       season: state.selectedSeason,
-      workoutType: entryForm.workoutType.trim() || "Daily shooting",
+      workoutType: entryForm.workoutType.trim() || DEFAULT_DRILL,
       workoutDate: entryForm.workoutDate,
       score,
       makes,
@@ -1061,7 +1096,7 @@ export default function Home() {
               <SectionHeading
                 icon={<Target className="h-5 w-5" />}
                 title="Drill leaderboards"
-                subtitle="Best scores for each distinct drill, ranked by player."
+                subtitle="Today and all-time rankings for each drill across the full roster."
               />
 
               <div className="mt-5 space-y-4">
@@ -1070,7 +1105,7 @@ export default function Home() {
                     Log Ladder and the other drill types to generate drill-specific leaderboards.
                   </div>
                 ) : (
-                  drillLeaderboards.map(({ drillName, playerRows }) => (
+                  drillLeaderboards.map(({ drillName, todayRows, allTimeRows }) => (
                     <div
                       key={drillName}
                       className="overflow-hidden rounded-3xl border border-white/10 bg-white/5"
@@ -1081,40 +1116,65 @@ export default function Home() {
                             {drillName}
                           </div>
                           <div className="mt-1 text-xs text-slate-400">
-                            Highest score per player for this drill
+                            Full roster view including players with no logged entries
                           </div>
                         </div>
                         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                          {playerRows.length} players
+                          {state.players.length} players
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-[0.55fr_1.8fr_0.8fr_0.8fr_0.9fr] bg-white/5 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">
-                        <span>Rank</span>
-                        <span>Player</span>
-                        <span>Best</span>
-                        <span>Avg</span>
-                        <span>Workouts</span>
-                      </div>
-
-                      {playerRows.length === 0 ? (
-                        <div className="px-4 py-6 text-sm text-slate-400">
-                          No scores logged for this drill yet.
-                        </div>
-                      ) : (
-                        playerRows.slice(0, 6).map(({ player, summary, bestScore }, index) => (
-                          <div
-                            key={`${drillName}-${player.id}`}
-                            className="grid grid-cols-[0.55fr_1.8fr_0.8fr_0.8fr_0.9fr] items-center border-t border-white/10 px-4 py-3 text-sm text-slate-200"
-                          >
-                            <span className="font-bold text-white">{index + 1}</span>
-                            <span className="font-semibold text-slate-100">{player.name}</span>
-                            <span className="font-semibold text-white">{bestScore}</span>
-                            <span>{formatAverage(summary.averageScore)}</span>
-                            <span>{summary.workouts}</span>
+                      <div className="grid gap-4 p-4">
+                        <div className="overflow-hidden rounded-2xl border border-white/10">
+                          <div className="border-b border-white/10 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-amber-300">
+                            Today ({todayDate})
                           </div>
-                        ))
-                      )}
+                          <div className="grid grid-cols-[0.55fr_1.8fr_0.8fr_0.8fr_0.9fr] bg-white/5 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">
+                            <span>Rank</span>
+                            <span>Player</span>
+                            <span>Best</span>
+                            <span>Avg</span>
+                            <span>Workouts</span>
+                          </div>
+                          {todayRows.map(({ player, summary, bestScore, rank }) => (
+                            <div
+                              key={`${drillName}-today-${player.id}`}
+                              className="grid grid-cols-[0.55fr_1.8fr_0.8fr_0.8fr_0.9fr] items-center border-t border-white/10 px-4 py-2.5 text-sm text-slate-200"
+                            >
+                              <span className="font-bold text-white">{rank ?? "-"}</span>
+                              <span className="font-semibold text-slate-100">{player.name}</span>
+                              <span className="font-semibold text-white">{bestScore ?? "--"}</span>
+                              <span>{summary.workouts ? formatAverage(summary.averageScore) : "--"}</span>
+                              <span>{summary.workouts}</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="overflow-hidden rounded-2xl border border-white/10">
+                          <div className="border-b border-white/10 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-sky-300">
+                            All time
+                          </div>
+                          <div className="grid grid-cols-[0.55fr_1.8fr_0.8fr_0.8fr_0.9fr] bg-white/5 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">
+                            <span>Rank</span>
+                            <span>Player</span>
+                            <span>Best</span>
+                            <span>Avg</span>
+                            <span>Workouts</span>
+                          </div>
+                          {allTimeRows.map(({ player, summary, bestScore, rank }) => (
+                            <div
+                              key={`${drillName}-all-${player.id}`}
+                              className="grid grid-cols-[0.55fr_1.8fr_0.8fr_0.8fr_0.9fr] items-center border-t border-white/10 px-4 py-2.5 text-sm text-slate-200"
+                            >
+                              <span className="font-bold text-white">{rank ?? "-"}</span>
+                              <span className="font-semibold text-slate-100">{player.name}</span>
+                              <span className="font-semibold text-white">{bestScore ?? "--"}</span>
+                              <span>{summary.workouts ? formatAverage(summary.averageScore) : "--"}</span>
+                              <span>{summary.workouts}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   ))
                 )}
