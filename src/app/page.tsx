@@ -230,6 +230,22 @@ function formatAverage(value: number) {
   return value.toFixed(1);
 }
 
+function getDefaultPlayerNameFromEmail(email: string) {
+  const localPart = email.split("@")[0] ?? "Player";
+  const words = localPart
+    .replace(/[._-]+/g, " ")
+    .split(" ")
+    .filter(Boolean);
+
+  if (words.length === 0) {
+    return "Player";
+  }
+
+  return words
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
 function StatCard({
   label,
   value,
@@ -435,8 +451,23 @@ export default function Home() {
     window.localStorage.setItem(STORAGE_KEY, serializedState);
   }, [authReady, authUser, hydrated, persistenceReady, state]);
 
+  const authFallbackPlayer = authUser
+    ? {
+        id: `user:${authUser.uid}`,
+        name:
+          authUser.displayName?.trim() ||
+          (authUser.email ? getDefaultPlayerNameFromEmail(authUser.email) : "Player"),
+        jerseyNumber: "",
+      }
+    : null;
+  const loggablePlayers = authFallbackPlayer
+    ? state.players.some((player) => player.id === authFallbackPlayer.id)
+      ? state.players
+      : [...state.players, authFallbackPlayer]
+    : state.players;
   const selectedPlayer =
-    state.players.find((player) => player.id === state.selectedPlayerId) ?? null;
+    loggablePlayers.find((player) => player.id === state.selectedPlayerId) ??
+    (loggablePlayers[0] ?? null);
   const seasonEntries = state.entries.filter(
     (entry) => entry.season === state.selectedSeason,
   );
@@ -602,10 +633,27 @@ export default function Home() {
       createdAt: new Date().toISOString(),
     };
 
-    setState((currentState) => ({
-      ...currentState,
-      entries: [...currentState.entries, nextEntry],
-    }));
+    setState((currentState) => {
+      const hasPlayer = currentState.players.some(
+        (player) => player.id === selectedPlayer.id,
+      );
+
+      return {
+        ...currentState,
+        players: hasPlayer
+          ? currentState.players
+          : [
+              ...currentState.players,
+              {
+                id: selectedPlayer.id,
+                name: selectedPlayer.name,
+                jerseyNumber: selectedPlayer.jerseyNumber,
+              },
+            ],
+        selectedPlayerId: selectedPlayer.id,
+        entries: [...currentState.entries, nextEntry],
+      };
+    });
     setEntryForm((currentForm) => ({
       ...currentForm,
       score: "",
@@ -1200,7 +1248,7 @@ export default function Home() {
                     Player
                   </label>
                   <select
-                    value={state.selectedPlayerId ?? ""}
+                    value={selectedPlayer?.id ?? ""}
                     onChange={(event) =>
                       setState((currentState) => ({
                         ...currentState,
@@ -1213,7 +1261,7 @@ export default function Home() {
                     <option value="" disabled className="bg-slate-950 text-slate-300">
                       Select player
                     </option>
-                    {state.players.map((player) => (
+                    {loggablePlayers.map((player) => (
                       <option key={player.id} value={player.id} className="bg-slate-950 text-white">
                         {player.name}
                         {player.jerseyNumber ? ` #${player.jerseyNumber}` : ""}
