@@ -22,12 +22,22 @@ import {
   signInWithPopup,
   signOut,
 } from "firebase/auth";
-import { onSnapshot, setDoc } from "firebase/firestore";
 import {
+  addDoc,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  setDoc,
+  writeBatch,
+} from "firebase/firestore";
+import {
+  entriesCollectionRef,
   firebaseAuth,
+  firestoreDb,
   googleAuthProvider,
   isFirebaseConfigured,
-  shootingLadderStateDoc,
+  playersCollectionRef,
+  teamDocRef,
 } from "@/lib/firebase";
 
 type Player = {
@@ -96,6 +106,12 @@ function getTodayDateString() {
   const now = new Date();
   const offsetMilliseconds = now.getTimezoneOffset() * 60 * 1000;
   return new Date(now.getTime() - offsetMilliseconds).toISOString().slice(0, 10);
+}
+
+function getErrorCode(error: unknown) {
+  return typeof error === "object" && error && "code" in error
+    ? String((error as { code: unknown }).code)
+    : "unknown";
 }
 
 function getDefaultState(): AppState {
@@ -317,7 +333,11 @@ function BrandLockup({ compact = false }: { compact?: boolean }) {
 }
 
 export default function Home() {
-  const [state, setState] = useState<AppState>(getDefaultState);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [entries, setEntries] = useState<WorkoutEntry[]>([]);
+  const [seasons, setSeasons] = useState<string[]>([getCurrentSeason()]);
+  const [selectedSeason, setSelectedSeason] = useState(getCurrentSeason());
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const [authReady, setAuthReady] = useState(!isFirebaseConfigured);
@@ -342,7 +362,7 @@ export default function Home() {
     attempts: "",
     notes: "",
   });
-  const lastSyncedStateRef = useRef<string | null>(null);
+  const lastSyncedLocalStateRef = useRef<string | null>(null);
 
   const isAdmin = authUser?.email?.toLowerCase() === ADMIN_EMAIL;
   const canUseSharedApp = !isFirebaseConfigured || Boolean(authUser);
@@ -355,9 +375,19 @@ export default function Home() {
       return;
     }
 
+    const authInstance = firebaseAuth;
+
     const unsubscribe = onAuthStateChanged(
-      firebaseAuth,
+      authInstance,
       (nextUser) => {
+        if (nextUser && nextUser.email?.toLowerCase() !== ADMIN_EMAIL) {
+          setAuthUser(null);
+          setAuthError("Only the coach account can sign in to this app.");
+          setAuthReady(true);
+          void signOut(authInstance);
+          return;
+        }
+
         setAuthUser(nextUser);
         setAuthError(null);
         setAuthReady(true);
@@ -372,41 +402,90 @@ export default function Home() {
     return unsubscribe;
   }, []);
 
+  // Each collection is its own listener so a save can only ever touch its own document.
   useEffect(() => {
-    if (isFirebaseConfigured) {
-      if (!authReady) {
-        return;
-      }
-
-      if (!authUser || !shootingLadderStateDoc) {
-        setHydrated(true);
-        setPersistenceReady(false);
-        return;
-      }
-
-      const unsubscribe = onSnapshot(
-        shootingLadderStateDoc,
-        (snapshot) => {
-          if (snapshot.exists()) {
-            const normalizedState = normalizeStoredState(snapshot.data() as Partial<AppState>);
-            lastSyncedStateRef.current = JSON.stringify(normalizedState);
-            setState(normalizedState);
-          }
-
-          setHydrated(true);
-          setPersistenceReady(true);
-        },
-        () => {
-          setAuthError("Connected to Firebase, but the shared team data could not be loaded.");
-          setHydrated(true);
-          setPersistenceReady(false);
-        },
-      );
-
-      return unsubscribe;
+    if (!isFirebaseConfigured) {
+      return;
     }
 
-    if (isFirebaseConfigured && shootingLadderStateDoc) {
+    if (!authReady) {
+      return;
+    }
+
+    if (!authUser || !teamDocRef || !playersCollectionRef || !entriesCollectionRef) {
+      setHydrated(true);
+      setPersistenceReady(false);
+      return;
+    }
+
+    const loadedFlags = { team: false, players: false, entries: false };
+    const markLoaded = (key: keyof typeof loadedFlags) => {
+      loadedFlags[key] = true;
+      if (loadedFlags.team && loadedFlags.players && loadedFlags.entries) {
+        setHydrated(true);
+        setPersistenceReady(true);
+      }
+    };
+
+    const unsubscribeTeam = onSnapshot(
+      teamDocRef,
+      (snapshot) => {
+        const data = snapshot.data() as { seasons?: string[] } | undefined;
+        const nextSeasons = data?.seasons?.length ? data.seasons : [getCurrentSeason()];
+        setSeasons(nextSeasons);
+        setSelectedSeason((current) => (nextSeasons.includes(current) ? current : nextSeasons[0]));
+        markLoaded("team");
+      },
+      (error) => {
+        setAuthError(`Connected to Firebase, but team settings could not be loaded (${getErrorCode(error)}).`);
+        markLoaded("team");
+      },
+    );
+
+    const unsubscribePlayers = onSnapshot(
+      playersCollectionRef,
+      (snapshot) => {
+        setPlayers(
+          snapshot.docs.map((playerDoc) => ({
+            id: playerDoc.id,
+            ...(playerDoc.data() as Omit<Player, "id">),
+          })),
+        );
+        markLoaded("players");
+      },
+      (error) => {
+        setAuthError(`Connected to Firebase, but the roster could not be loaded (${getErrorCode(error)}).`);
+        markLoaded("players");
+      },
+    );
+
+    const unsubscribeEntries = onSnapshot(
+      entriesCollectionRef,
+      (snapshot) => {
+        setEntries(
+          snapshot.docs.map((entryDoc) => ({
+            id: entryDoc.id,
+            ...(entryDoc.data() as Omit<WorkoutEntry, "id">),
+          })),
+        );
+        markLoaded("entries");
+      },
+      (error) => {
+        setAuthError(`Connected to Firebase, but workout entries could not be loaded (${getErrorCode(error)}).`);
+        markLoaded("entries");
+      },
+    );
+
+    return () => {
+      unsubscribeTeam();
+      unsubscribePlayers();
+      unsubscribeEntries();
+    };
+  }, [authReady, authUser]);
+
+  // Local-only fallback when Firebase isn't configured (no shared multi-device sync).
+  useEffect(() => {
+    if (isFirebaseConfigured) {
       return;
     }
 
@@ -415,8 +494,12 @@ export default function Home() {
 
       if (storedState) {
         const normalizedState = normalizeStoredState(JSON.parse(storedState) as Partial<AppState>);
-        lastSyncedStateRef.current = JSON.stringify(normalizedState);
-        setState(normalizedState);
+        lastSyncedLocalStateRef.current = JSON.stringify(normalizedState);
+        setPlayers(normalizedState.players);
+        setEntries(normalizedState.entries);
+        setSeasons(normalizedState.seasons);
+        setSelectedSeason(normalizedState.selectedSeason);
+        setSelectedPlayerId(normalizedState.selectedPlayerId);
       }
     } catch {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -424,32 +507,23 @@ export default function Home() {
       setHydrated(true);
       setPersistenceReady(true);
     }
-  }, [authReady, authUser]);
+  }, []);
 
   useEffect(() => {
-    if (!hydrated || !persistenceReady) {
+    if (isFirebaseConfigured || !hydrated || !persistenceReady) {
       return;
     }
 
-    const serializedState = JSON.stringify(state);
+    const combinedState: AppState = { players, entries, seasons, selectedSeason, selectedPlayerId };
+    const serializedState = JSON.stringify(combinedState);
 
-    if (serializedState === lastSyncedStateRef.current) {
+    if (serializedState === lastSyncedLocalStateRef.current) {
       return;
     }
 
-    if (isFirebaseConfigured && shootingLadderStateDoc) {
-      if (!authReady || !authUser) {
-        return;
-      }
-
-      lastSyncedStateRef.current = serializedState;
-      void setDoc(shootingLadderStateDoc, state, { merge: true });
-      return;
-    }
-
-    lastSyncedStateRef.current = serializedState;
+    lastSyncedLocalStateRef.current = serializedState;
     window.localStorage.setItem(STORAGE_KEY, serializedState);
-  }, [authReady, authUser, hydrated, persistenceReady, state]);
+  }, [hydrated, persistenceReady, players, entries, seasons, selectedSeason, selectedPlayerId]);
 
   const authFallbackPlayer = authUser
     ? {
@@ -461,29 +535,25 @@ export default function Home() {
       }
     : null;
   const loggablePlayers = authFallbackPlayer
-    ? state.players.some((player) => player.id === authFallbackPlayer.id)
-      ? state.players
-      : [...state.players, authFallbackPlayer]
-    : state.players;
+    ? players.some((player) => player.id === authFallbackPlayer.id)
+      ? players
+      : [...players, authFallbackPlayer]
+    : players;
   const selectedPlayer =
-    loggablePlayers.find((player) => player.id === state.selectedPlayerId) ??
+    loggablePlayers.find((player) => player.id === selectedPlayerId) ??
     (loggablePlayers[0] ?? null);
-  const seasonEntries = state.entries.filter(
-    (entry) => entry.season === state.selectedSeason,
-  );
+  const seasonEntries = entries.filter((entry) => entry.season === selectedSeason);
   const teamSeasonSummary = summarizeEntries(seasonEntries);
-  const teamCareerSummary = summarizeEntries(state.entries);
-  const recentEntries = [...state.entries]
+  const teamCareerSummary = summarizeEntries(entries);
+  const recentEntries = [...entries]
     .sort((left, right) => right.workoutDate.localeCompare(left.workoutDate))
     .slice(0, 8);
 
-  const leaderboard = state.players
+  const leaderboard = players
     .map((player) => {
-      const careerEntries = state.entries.filter(
-        (entry) => entry.playerId === player.id,
-      );
+      const careerEntries = entries.filter((entry) => entry.playerId === player.id);
       const selectedSeasonEntries = careerEntries.filter(
-        (entry) => entry.season === state.selectedSeason,
+        (entry) => entry.season === selectedSeason,
       );
 
       return {
@@ -502,29 +572,23 @@ export default function Home() {
 
   const selectedPlayerSeasonSummary = selectedPlayer
     ? summarizeEntries(
-        state.entries.filter(
-          (entry) =>
-            entry.playerId === selectedPlayer.id &&
-            entry.season === state.selectedSeason,
+        entries.filter(
+          (entry) => entry.playerId === selectedPlayer.id && entry.season === selectedSeason,
         ),
       )
     : summarizeEntries([]);
   const selectedPlayerCareerSummary = selectedPlayer
-    ? summarizeEntries(
-        state.entries.filter((entry) => entry.playerId === selectedPlayer.id),
-      )
+    ? summarizeEntries(entries.filter((entry) => entry.playerId === selectedPlayer.id))
     : summarizeEntries([]);
   const todayDate = getTodayDateString();
-  const drillLeaderboards = getDistinctDrills(state.entries).map((drillName) => {
-    const allTimeEntries = getDrillEntries(state.entries, drillName);
-    const todayEntries = allTimeEntries.filter(
-      (entry) => entry.workoutDate === todayDate,
-    );
+  const drillLeaderboards = getDistinctDrills(entries).map((drillName) => {
+    const allTimeEntries = getDrillEntries(entries, drillName);
+    const todayEntries = allTimeEntries.filter((entry) => entry.workoutDate === todayDate);
 
     return {
       drillName,
-      allTimeRows: buildDrillLeaderboardRows(state.players, allTimeEntries),
-      todayRows: buildDrillLeaderboardRows(state.players, todayEntries),
+      allTimeRows: buildDrillLeaderboardRows(players, allTimeEntries),
+      todayRows: buildDrillLeaderboardRows(players, todayEntries),
     };
   });
 
@@ -538,7 +602,7 @@ export default function Home() {
   const panelVisibilityClass = (panel: MobilePanel) =>
     mobilePanel === panel ? "block" : "hidden";
 
-  function handleAddPlayer(event: React.FormEvent<HTMLFormElement>) {
+  async function handleAddPlayer(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const name = playerForm.name.trim();
@@ -546,39 +610,49 @@ export default function Home() {
       return;
     }
 
-    const nextPlayer: Player = {
-      id: createId(),
-      name,
-      jerseyNumber: playerForm.jerseyNumber.trim(),
-    };
+    const nextPlayer = { name, jerseyNumber: playerForm.jerseyNumber.trim() };
 
-    setState((currentState) => ({
-      ...currentState,
-      players: [...currentState.players, nextPlayer],
-      selectedPlayerId: currentState.selectedPlayerId ?? nextPlayer.id,
-    }));
+    if (isFirebaseConfigured && playersCollectionRef) {
+      try {
+        const newPlayerRef = doc(playersCollectionRef);
+        await setDoc(newPlayerRef, nextPlayer);
+        setSelectedPlayerId((current) => current ?? newPlayerRef.id);
+      } catch (error) {
+        setAuthError(`Could not add player (${getErrorCode(error)}).`);
+      }
+    } else {
+      const newPlayer: Player = { id: createId(), ...nextPlayer };
+      setPlayers((current) => [...current, newPlayer]);
+      setSelectedPlayerId((current) => current ?? newPlayer.id);
+    }
+
     setPlayerForm({ name: "", jerseyNumber: "" });
   }
 
-  function handleRemovePlayer(playerId: string) {
-    setState((currentState) => {
-      const remainingPlayers = currentState.players.filter(
-        (player) => player.id !== playerId,
-      );
+  async function handleRemovePlayer(playerId: string) {
+    if (isFirebaseConfigured && playersCollectionRef && entriesCollectionRef && firestoreDb) {
+      try {
+        const playersRef = playersCollectionRef;
+        const entriesRef = entriesCollectionRef;
+        const batch = writeBatch(firestoreDb);
+        batch.delete(doc(playersRef, playerId));
+        entries
+          .filter((entry) => entry.playerId === playerId)
+          .forEach((entry) => batch.delete(doc(entriesRef, entry.id)));
+        await batch.commit();
+        setSelectedPlayerId((current) => (current === playerId ? null : current));
+      } catch (error) {
+        setAuthError(`Could not remove player (${getErrorCode(error)}).`);
+      }
+      return;
+    }
 
-      return {
-        ...currentState,
-        players: remainingPlayers,
-        entries: currentState.entries.filter((entry) => entry.playerId !== playerId),
-        selectedPlayerId:
-          currentState.selectedPlayerId === playerId
-            ? remainingPlayers[0]?.id ?? null
-            : currentState.selectedPlayerId,
-      };
-    });
+    setPlayers((current) => current.filter((player) => player.id !== playerId));
+    setEntries((current) => current.filter((entry) => entry.playerId !== playerId));
+    setSelectedPlayerId((current) => (current === playerId ? null : current));
   }
 
-  function handleAddSeason(event: React.FormEvent<HTMLFormElement>) {
+  async function handleAddSeason(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const season = seasonForm.trim();
@@ -586,20 +660,22 @@ export default function Home() {
       return;
     }
 
-    setState((currentState) => {
-      if (currentState.seasons.includes(season)) {
-        return { ...currentState, selectedSeason: season };
-      }
+    const nextSeasons = seasons.includes(season) ? seasons : [...seasons, season].sort();
 
-      return {
-        ...currentState,
-        seasons: [...currentState.seasons, season].sort(),
-        selectedSeason: season,
-      };
-    });
+    if (isFirebaseConfigured && teamDocRef) {
+      try {
+        await setDoc(teamDocRef, { seasons: nextSeasons }, { merge: true });
+      } catch (error) {
+        setAuthError(`Could not save season (${getErrorCode(error)}).`);
+      }
+    } else {
+      setSeasons(nextSeasons);
+    }
+
+    setSelectedSeason(season);
   }
 
-  function handleLogWorkout(event: React.FormEvent<HTMLFormElement>) {
+  async function handleLogWorkout(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!selectedPlayer) {
@@ -620,10 +696,9 @@ export default function Home() {
       return;
     }
 
-    const nextEntry: WorkoutEntry = {
-      id: createId(),
+    const nextEntry = {
       playerId: selectedPlayer.id,
-      season: state.selectedSeason,
+      season: selectedSeason,
       workoutType: entryForm.workoutType.trim() || DEFAULT_DRILL,
       workoutDate: entryForm.workoutDate,
       score,
@@ -633,27 +708,27 @@ export default function Home() {
       createdAt: new Date().toISOString(),
     };
 
-    setState((currentState) => {
-      const hasPlayer = currentState.players.some(
-        (player) => player.id === selectedPlayer.id,
-      );
+    const hasPlayer = players.some((player) => player.id === selectedPlayer.id);
 
-      return {
-        ...currentState,
-        players: hasPlayer
-          ? currentState.players
-          : [
-              ...currentState.players,
-              {
-                id: selectedPlayer.id,
-                name: selectedPlayer.name,
-                jerseyNumber: selectedPlayer.jerseyNumber,
-              },
-            ],
-        selectedPlayerId: selectedPlayer.id,
-        entries: [...currentState.entries, nextEntry],
-      };
-    });
+    if (isFirebaseConfigured && entriesCollectionRef && playersCollectionRef) {
+      try {
+        if (!hasPlayer) {
+          await setDoc(doc(playersCollectionRef, selectedPlayer.id), {
+            name: selectedPlayer.name,
+            jerseyNumber: selectedPlayer.jerseyNumber,
+          });
+        }
+        await addDoc(entriesCollectionRef, nextEntry);
+        setSelectedPlayerId(selectedPlayer.id);
+      } catch (error) {
+        setAuthError(`Save failed (${getErrorCode(error)}). Check Firestore permissions.`);
+      }
+    } else {
+      setPlayers((current) => (hasPlayer ? current : [...current, selectedPlayer]));
+      setEntries((current) => [...current, { id: createId(), ...nextEntry }]);
+      setSelectedPlayerId(selectedPlayer.id);
+    }
+
     setEntryForm((currentForm) => ({
       ...currentForm,
       score: "",
@@ -664,8 +739,18 @@ export default function Home() {
   }
 
   function clearAllData() {
+    if (isFirebaseConfigured) {
+      // Shared team data lives in Firestore; remove players/entries individually instead.
+      setSelectedPlayerId(null);
+      return;
+    }
+
     const resetState = getDefaultState();
-    setState(resetState);
+    setPlayers(resetState.players);
+    setEntries(resetState.entries);
+    setSeasons(resetState.seasons);
+    setSelectedSeason(resetState.selectedSeason);
+    setSelectedPlayerId(resetState.selectedPlayerId);
     setSeasonForm(resetState.selectedSeason);
   }
 
@@ -834,21 +919,21 @@ export default function Home() {
               <div className="hidden w-full grid-cols-2 gap-3 sm:grid sm:grid-cols-4">
                 <StatCard
                   label="Roster"
-                  value={state.players.length}
+                  value={players.length}
                   detail="Players currently loaded"
                   icon={<Users className="h-5 w-5" />}
                   accent="border-sky-400/20 bg-sky-400/10 text-sky-300"
                 />
                 <StatCard
                   label="Season"
-                  value={state.selectedSeason}
+                  value={selectedSeason}
                   detail="Current leaderboard scope"
                   icon={<CalendarRange className="h-5 w-5" />}
                   accent="border-amber-400/20 bg-amber-400/10 text-amber-300"
                 />
                 <StatCard
                   label="Entries"
-                  value={state.entries.length}
+                  value={entries.length}
                   detail="Logged workouts in browser"
                   icon={<NotebookPen className="h-5 w-5" />}
                   accent="border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
@@ -915,20 +1000,15 @@ export default function Home() {
                   Active player
                 </label>
                 <select
-                  value={state.selectedPlayerId ?? ""}
-                  onChange={(event) =>
-                    setState((currentState) => ({
-                      ...currentState,
-                      selectedPlayerId: event.target.value || null,
-                    }))
-                  }
+                  value={selectedPlayerId ?? ""}
+                  onChange={(event) => setSelectedPlayerId(event.target.value || null)}
                   disabled={!canLogWorkout}
                   className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-amber-400"
                 >
                   <option value="" disabled className="bg-slate-950 text-slate-300">
                     Select player
                   </option>
-                  {state.players.map((player) => (
+                  {players.map((player) => (
                     <option
                       key={player.id}
                       value={player.id}
@@ -976,7 +1056,7 @@ export default function Home() {
               </form>
 
               <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {state.players.length === 0 ? (
+                {players.length === 0 ? (
                   <div className="rounded-3xl border border-dashed border-white/12 bg-white/5 px-5 py-10 text-sm text-slate-400 sm:col-span-2 xl:col-span-3">
                     Start by adding your roster. Once players are listed here, they can tap their name and log workouts from the home screen.
                   </div>
@@ -1060,19 +1140,14 @@ export default function Home() {
                 />
 
                 <div className="flex flex-wrap gap-2">
-                  {state.seasons.map((season) => (
+                  {seasons.map((season) => (
                     <button
                       key={season}
                       type="button"
-                      onClick={() =>
-                        setState((currentState) => ({
-                          ...currentState,
-                          selectedSeason: season,
-                        }))
-                      }
+                      onClick={() => setSelectedSeason(season)}
                       disabled={!canUseSharedApp}
                       className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-                        season === state.selectedSeason
+                        season === selectedSeason
                           ? "bg-amber-500 text-slate-950"
                           : "bg-white/5 text-slate-300 hover:bg-white/10"
                       }`}
@@ -1168,7 +1243,7 @@ export default function Home() {
                           </div>
                         </div>
                         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                          {state.players.length} players
+                          {players.length} players
                         </div>
                       </div>
 
@@ -1237,7 +1312,7 @@ export default function Home() {
                 title="Log a workout"
                 subtitle={
                   selectedPlayer
-                    ? `Recording for ${selectedPlayer.name} in ${state.selectedSeason}.`
+                    ? `Recording for ${selectedPlayer.name} in ${selectedSeason}.`
                     : "Select a player first to start logging scores."
                 }
               />
@@ -1249,12 +1324,7 @@ export default function Home() {
                   </label>
                   <select
                     value={selectedPlayer?.id ?? ""}
-                    onChange={(event) =>
-                      setState((currentState) => ({
-                        ...currentState,
-                        selectedPlayerId: event.target.value || null,
-                      }))
-                    }
+                    onChange={(event) => setSelectedPlayerId(event.target.value || null)}
                     disabled={!canLogWorkout}
                     className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-amber-400"
                   >
@@ -1375,7 +1445,7 @@ export default function Home() {
                 <div className="mt-3 text-3xl font-black text-white">
                   {teamSeasonSummary.totalScore}
                 </div>
-                <div className="mt-2 text-sm text-slate-400">Total score in {state.selectedSeason}</div>
+                <div className="mt-2 text-sm text-slate-400">Total score in {selectedSeason}</div>
                 <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
                   <div>
                     <div className="text-slate-400">Avg</div>
@@ -1446,7 +1516,7 @@ export default function Home() {
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
                       <div className="text-xs font-bold uppercase tracking-[0.2em] text-amber-300">
-                        {state.selectedSeason}
+                        {selectedSeason}
                       </div>
                       <div className="mt-3 text-3xl font-black text-white">
                         {selectedPlayerSeasonSummary.totalScore}
@@ -1486,7 +1556,7 @@ export default function Home() {
                   </div>
                 ) : (
                   recentEntries.map((entry) => {
-                    const player = state.players.find(
+                    const player = players.find(
                       (candidate) => candidate.id === entry.playerId,
                     );
 

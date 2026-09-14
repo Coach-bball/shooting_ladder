@@ -1,6 +1,6 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
-import { doc, getFirestore } from "firebase/firestore";
+import { collection, doc, getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
@@ -25,8 +25,12 @@ export const firebaseAuth = firebaseApp ? getAuth(firebaseApp) : null;
 export const googleAuthProvider = firebaseApp ? new GoogleAuthProvider() : null;
 export const firebaseStorage = firebaseApp ? getStorage(firebaseApp) : null;
 
-export const shootingLadderStateDoc = firestoreDb
-  ? doc(firestoreDb, "teams", "default", "state", "main")
-  : null;
+// Shared team metadata (season list). Each player/entry lives in its own
+// document below so one save can never overwrite everyone else's data.
+export const teamDocRef = firestoreDb ? doc(firestoreDb, "teams", "default") : null;
+export const playersCollectionRef = teamDocRef ? collection(teamDocRef, "players") : null;
+export const entriesCollectionRef = teamDocRef ? collection(teamDocRef, "entries") : null;
 
-export const isFirebaseConfigured = Boolean(firebaseApp && firestoreDb && shootingLadderStateDoc);
+export const isFirebaseConfigured = Boolean(
+  firebaseApp && firestoreDb && teamDocRef && playersCollectionRef && entriesCollectionRef,
+);
